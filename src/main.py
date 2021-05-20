@@ -1,11 +1,11 @@
 from get_data import get_data
 from vq_vae import train_vqvae_model
 
-data = get_data()
+x_train = get_data()
 
-x_train, _, _ = data['data']
+#x_train, _, _ = data['data']
 
-del data
+#del data
 
 # Hyperparameters
 k = 256  # Number of codebook entries
