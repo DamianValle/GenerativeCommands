@@ -33,25 +33,11 @@ def get_data():
 
 	with open('../data/train_x.npy', 'rb') as f:
 		train_x = np.load(f)
-	with open('../data/val_x.npy', 'rb') as f:
-		val_x = np.load(f)
-	with open('../data/test_x.npy', 'rb') as f:
-		test_x = np.load(f)
-
-	with open('../data/train_y.npy', 'rb') as f:
-		train_y = np.load(f)
-	with open('../data/val_y.npy', 'rb') as f:
-		val_y = np.load(f)
-	with open('../data/test_y.npy', 'rb') as f:
-		test_y = np.load(f)
-
-	Y_train = np.array(K.utils.to_categorical(train_y, 30))
-	Y_val = np.array(K.utils.to_categorical(val_y, 30))
-	Y_test = np.array(K.utils.to_categorical(test_y, 30))
 
 	normalizer = Normalizer()
 	normalizer.fit_transform(train_x)
-	normalizer.transform(val_x)
-	normalizer.transform(test_x)
+	#normalizer.transform(val_x)
+	#normalizer.transform(test_x)
 
-	return {'data': (train_x, val_x, test_x), 'labels': (Y_train, Y_val, Y_test)}
+	return train_x
+	#return {'data': (train_x, val_x, test_x), 'labels': (Y_train, Y_val, Y_test)}
