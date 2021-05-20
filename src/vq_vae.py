@@ -6,6 +6,7 @@ import tensorflow as tf
 import tensorflow.keras as K
 from tensorflow.keras import layers
 
+global BETA
 
 class VectorQuantizer(K.layers.Layer):
 	def __init__(self, k, **kwargs):
@@ -33,67 +34,112 @@ class VectorQuantizer(K.layers.Layer):
 		z_q = tf.reduce_sum(z_q, axis=-2)
 		return z_q
 
-class Block(layers.Layer):
-	def __init__(self, kernel, strides, filters=256, padding='valid'):
-		super(Block, self).__init__()
-		self.lrelu = layers.LeakyReLU()
-		self.bn = layers.BatchNormalization()
-		self.conv = layers.Conv2D(filters=filters, kernel_size=kernel, strides=strides, padding=padding)
+class ResidualStack(layers.Layer):
+  def __init__(self, num_hiddens, num_residual_layers, num_residual_hiddens,
+               name=None):
+    super(ResidualStack, self).__init__(name=name)
+    self._num_hiddens = num_hiddens
+    self._num_residual_layers = num_residual_layers
+    self._num_residual_hiddens = num_residual_hiddens
 
-	def call(self, x):
-		x = self.bn(x)
-		x = self.lrelu(x)
-		x = self.conv(x)
-		return x
+    self._layers = []
+    for i in range(num_residual_layers):
+      conv3 = layers.Conv2D(
+          filters=num_residual_hiddens,
+          kernel_size=(2, 2),
+          strides=(1, 1),
+          name="res3x3_%d" % i,
+          activation='relu',
+          padding='same')
+      conv1 = layers.Conv2D(
+          filters=num_hiddens,
+          kernel_size=(1, 1),
+          strides=(1, 1),
+          name="res1x1_%d" % i,
+          activation='relu')
+      self._layers.append((conv3, conv1))
 
-
-class Unblock(layers.Layer):
-	def __init__(self, kernel, strides, filters=256, padding='valid', activation='sigmoid'):
-		super(Unblock, self).__init__()
-		if activation == 'sigmoid':
-			self.activation = K.activations.sigmoid
-		self.activation = layers.LeakyReLU()
-		self.bn = layers.BatchNormalization()
-		self.conv = layers.Conv2DTranspose(filters=filters, kernel_size=kernel, strides=strides, padding=padding)
-
-	def call(self, x):
-		x = self.conv(x)
-		x = self.bn(x)
-		x = self.activation(x)
-		return x
-
-
-def encoder_pass(inputs, d):
-	x = inputs
-	x = Block(kernel=(3, 3), strides=(1, 1))(x)
-	x = Block(kernel=(3, 3), strides=(2, 2), padding='same')(x)
-	x = Block(kernel=(1, 3), strides=(2, 2))(x)
-	x = Block(kernel=(1, 3), strides=(1, 2))(x)
-	x = Block(kernel=(1, 3), strides=(1, 1))(x)
-	x = Block(kernel=(1, 3), strides=(1, 2))(x)
-	x = Block(kernel=(1, 3), strides=(1, 1))(x)
-	z_e = K.layers.Conv2D(filters=d, kernel_size=1, padding='valid', activation=None, strides=(1, 1), name='z_e')(x)
-	return z_e
+  def __call__(self, inputs):
+    h = inputs
+    for conv3, conv1 in self._layers:
+        conv3_out = conv3(h)
+        conv1_out = conv1(conv3_out)
+        print(h.shape, conv1_out.shape)
+        h += conv1_out
+    return tf.nn.relu(h)  # Resnet V1 styl
 
 
-def decoder_pass(inputs):
-	x = inputs
-	x = Unblock(kernel=(1, 1), strides=(1, 1))(x)
-	x = Unblock(kernel=(1, 3), strides=(1, 1))(x)
-	x = Unblock(kernel=(1, 3), strides=(1, 1))(x)
-	x = Unblock(kernel=(3, 3), strides=(1, 2), padding='same')(x)
-	x = Unblock(kernel=(3, 3), strides=(2, 2), padding='same')(x)
-	x = Unblock(kernel=(3, 3), strides=(2, 2), padding='same')(x)
-	x = Unblock(filters=1, kernel=(1, 2), strides=(1, 2), activation='sigmoid')(x)
-	return x
+def encoder_pass(input, d, num_hiddens, num_residual_layers, num_residual_hiddens):
+    x = layers.Conv2D(
+        filters=num_hiddens // 2,
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        name="enc1",
+        activation='relu',
+        padding='same')(input)
+    x = layers.Conv2D(
+        filters=num_hiddens,
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        name="enc2",
+        activation='relu',
+        padding='same')(x)
+    x = layers.Conv2D(
+        filters=num_hiddens,
+        kernel_size=(3, 3),
+        strides=(1, 1),
+        name="enc3",
+        activation='relu',
+        padding='same')(x)
+    x = ResidualStack(
+        num_hiddens,
+        num_residual_layers,
+        num_residual_hiddens)(x)
+
+    z_e = K.layers.Conv2D(filters=d, kernel_size=1, padding='valid', activation=None,
+                          strides=(1, 1), name='z_e')(x)
+    return z_e
+
+def decoder_pass(input, num_hiddens, num_residual_layers, num_residual_hiddens):
+
+    x = layers.Conv2D(
+        filters=num_hiddens,
+        kernel_size=(3, 3),
+        strides=(1, 1),
+        name="dec_1",
+        padding='same')(input)
+    x = ResidualStack(
+        num_hiddens,
+        num_residual_layers,
+        num_residual_hiddens)(x)
+    x = layers.Conv2DTranspose(
+        filters=num_hiddens // 2,
+        #output_shape=None,
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        name="dec_2",
+        activation='relu',
+        padding='same')(x)
+    x = layers.Conv2DTranspose(
+        filters=1,
+        #output_shape=None,
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        name="dec_3",
+        padding='same',
+        activation=None)(x)
+    return x
 
 
 def build_vqvae(k, d, input_shape):
+	num_hiddens = 128
+	num_residual_hiddens = 32
+	num_residual_layers = 2
 	global SIZE
 	global SIZE2
 	## Encoder
 	encoder_inputs = K.layers.Input(shape=input_shape, name='encoder_inputs')
-	z_e = encoder_pass(encoder_inputs, d)
+	z_e = encoder_pass(encoder_inputs, d, num_hiddens, num_residual_layers, num_residual_hiddens)
 	SIZE = int(z_e.get_shape()[1])
 	SIZE2 = int(z_e.get_shape()[2])
 
@@ -104,7 +150,7 @@ def build_vqvae(k, d, input_shape):
 
 	## Decoder
 	decoder_inputs = K.layers.Input(shape=(SIZE, SIZE2, d), name='decoder_inputs')
-	decoded = decoder_pass(decoder_inputs)
+	decoded = decoder_pass(decoder_inputs, num_hiddens, num_residual_layers, num_residual_hiddens)
 	decoder = K.Model(inputs=decoder_inputs, outputs=decoded, name='decoder')
 
 	## VQVAE Model (training)
@@ -148,8 +194,6 @@ def mse_loss(ground_truth, predictions):
 
 
 def latent_loss(dummy_ground_truth, outputs):
-	global BETA
-	BETA = 1.0
 	del dummy_ground_truth
 	z_e, z_q = tf.split(outputs, 2, axis=-1)
 	vq_loss = tf.reduce_mean((tf.stop_gradient(z_e) - z_q) ** 2)
@@ -170,8 +214,8 @@ def ze_norm(y_true, y_pred):
 	return tf.reduce_mean(tf.norm(z_e, axis=-1))
 
 
-def train_vqvae_model(i, x_train, epochs, batch_size,  k, d, input_shape, lr):
-
+def train_vqvae_model(i, x_train, epochs, batch_size,  k, d, input_shape, lr, beta):
+	BETA = beta
 	vq_vae, vq_vae_sampler, encoder, decoder, codes_sampler, get_vq_vae_codebook = build_vqvae(
 		k, d, input_shape=input_shape)
 
@@ -187,7 +231,7 @@ def train_vqvae_model(i, x_train, epochs, batch_size,  k, d, input_shape, lr):
 
 	history = vq_vae.fit(x_train, x_train, epochs=epochs, batch_size=batch_size, verbose=2, callbacks=[esc])
 
-	vq_vae.save_weights(f'../models/vq-vae_{i}.h5')
+	vq_vae.save_weights(f'../models/vq-vae_{i}_{BETA}.h5')
 
-	with open(f'../models/train_history_{i}', 'wb') as file_pi:
+	with open(f'../models/train_history_{i}_{BETA}', 'wb') as file_pi:
 		pickle.dump(history.history, file_pi)

@@ -18,8 +18,9 @@ batch_size = 128  # Batch size for training the VQVAE
 epochs = 3  # Number of epochs
 lr = 3e-4  # Learning rate
 
-params = [(64, 4), (256, 2), (256, 4), (512, 30), (512, 1)]
+params = [(128, 64), (256, 64), (512, 64)]
+beta = [0.25, 0.75]
 
 for i, (k, d) in enumerate(params):
-
-	train_vqvae_model(i, x_train, epochs, batch_size,  k, d, input_shape, lr)
+	for b in beta:
+		train_vqvae_model(i, x_train, epochs, batch_size,  k, d, input_shape, lr, b)
